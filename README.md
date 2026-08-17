@@ -15,4 +15,4 @@ A customized ComfyUI node for MiniMax H3 prompt engineering, visual side-by-side
 1. Navigate to your ComfyUI custom nodes directory:
    ```bash
    cd ComfyUI/custom_nodes
-git clone https://github.com/mizukir0418-gif/ComfyUI-MiniMax-H3-Prompt_Synthesizer.git
+git clone [https://github.com/mizukir0418-gif/ComfyUI-MiniMax-H3-Prompt_Synthesizer.git](https://github.com/mizukir0418-gif/ComfyUI-MiniMax-H3-Prompt_Synthesizer.git)
