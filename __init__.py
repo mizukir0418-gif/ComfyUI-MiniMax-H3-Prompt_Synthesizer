@@ -1,0 +1,7 @@
+import os
+
+WEB_DIRECTORY = "./web"
+
+from .minimax_h3_template_node import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+
+__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', 'WEB_DIRECTORY']
