@@ -16,3 +16,4 @@ A customized ComfyUI node for MiniMax H3 prompt engineering, visual side-by-side
    ```bash
    cd ComfyUI/custom_nodes
 git clone [https://github.com/mizukir0418-gif/ComfyUI-MiniMax-H3-Prompt_Synthesizer.git](https://github.com/mizukir0418-gif/ComfyUI-MiniMax-H3-Prompt_Synthesizer.git)
+workflow https://civitai.red/models/2866184/minimax-h3-reverse-prompt-and-expansion-workflow-nsfw
