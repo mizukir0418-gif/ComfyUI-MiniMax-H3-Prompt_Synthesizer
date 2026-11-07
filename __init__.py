@@ -1,6 +1,11 @@
 import os
 
-WEB_DIRECTORY = "./web"
+# 动态判断静态文件目录：兼容 JS 文件存放在根目录或 web 目录
+current_dir = os.path.dirname(os.path.realpath(__file__))
+if os.path.exists(os.path.join(current_dir, "web")):
+    WEB_DIRECTORY = "./web"
+else:
+    WEB_DIRECTORY = "."
 
 from .minimax_h3_template_node import (
     NODE_CLASS_MAPPINGS as TEMPLATE_CLASS,

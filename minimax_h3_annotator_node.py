@@ -1,8 +1,11 @@
-import torch
-import numpy as np
-from PIL import Image
+import os
+import json
 import io
 import base64
+import torch
+import numpy as np
+from PIL import Image, ImageOps
+import folder_paths
 
 class MiniMaxH3CanvasAnnotator:
     @classmethod
@@ -11,67 +14,110 @@ class MiniMaxH3CanvasAnnotator:
             "required": {},
             "optional": {
                 "image": ("IMAGE",),
-                "mode": ("STRING", {"default": "Overlay on Image"}),
                 "canvas_data": ("STRING", {"default": "", "multiline": True}),
                 "bg_data": ("STRING", {"default": "", "multiline": True}),
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE")
-    RETURN_NAMES = ("clean_image", "annotated_image")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "MASK")
+    RETURN_NAMES = ("clean_image", "annotated_image", "mask")
     FUNCTION = "process_canvas"
     CATEGORY = "MiniMax_H3"
 
-    def process_canvas(self, mode="Overlay on Image", canvas_data="", bg_data="", image=None):
-        # 1. 解析透明标注图层 (stroke_pil)
+    def process_canvas(self, canvas_data="", bg_data="", image=None):
+        # 1. 解析前端传来的舞台元数据 (JSON 格式)
+        bg_meta = {}
+        if bg_data and bg_data.strip().startswith("{"):
+            try:
+                bg_meta = json.loads(bg_data)
+            except Exception as e:
+                print(f"[MiniMax H3 Canvas] bg_data JSON parse error: {e}")
+
+        # 2. 解码透明标注与贴纸层 (stroke_pil, RGBA)
         stroke_pil = None
         if canvas_data and "," in canvas_data:
             try:
-                header, encoded = canvas_data.split(",", 1)
+                _, encoded = canvas_data.split(",", 1)
                 stroke_bytes = base64.b64decode(encoded)
                 stroke_pil = Image.open(io.BytesIO(stroke_bytes)).convert("RGBA")
             except Exception as e:
                 print(f"[MiniMax H3 Canvas] canvas_data decode error: {e}")
 
-        # 2. 解析基础 Clean 底图 (base_pil)
-        if image is not None and mode == "Overlay on Image":
-            i = 255.0 * image[0].cpu().numpy()
-            base_pil = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)).convert("RGBA")
-        elif bg_data and "," in bg_data:
-            header, encoded = bg_data.split(",", 1)
-            bg_bytes = base64.b64decode(encoded)
-            base_pil = Image.open(io.BytesIO(bg_bytes)).convert("RGBA")
+        # 3. 构建 100% 纯净、无绿幕的 clean_tensor [B, H, W, 3]
+        if image is not None:
+            clean_tensor = image.detach().cpu().contiguous().float()
         else:
-            base_color = (0, 0, 0, 255) if mode == "Overlay on Image" else (255, 255, 255, 255)
-            init_size = stroke_pil.size if stroke_pil else (1024, 1024)
-            base_pil = Image.new("RGBA", init_size, base_color)
+            clean_pil = None
+            filename = bg_meta.get("filename")
+            if filename:
+                input_dir = folder_paths.get_input_directory()
+                img_path = os.path.join(input_dir, filename)
+                if os.path.isfile(img_path):
+                    try:
+                        img_raw = Image.open(img_path)
+                        clean_pil = ImageOps.exif_transpose(img_raw).convert("RGB")
+                    except Exception as e:
+                        print(f"[MiniMax H3 Canvas] Failed to load input file {filename}: {e}")
 
-        # 3. 统一分辨率对齐逻辑：以高分辨率为基准
-        if stroke_pil is not None:
-            if image is not None and mode == "Overlay on Image":
-                # 有上游图像节点输入时，以连线图像尺寸为准
-                if stroke_pil.size != base_pil.size:
-                    stroke_pil = stroke_pil.resize(base_pil.size, Image.Resampling.LANCZOS)
-            else:
-                # 无上游连线时，若底图（压缩背景）尺寸小于标注层，放大底图向上对齐
-                if base_pil.width * base_pil.height < stroke_pil.width * stroke_pil.height:
-                    base_pil = base_pil.resize(stroke_pil.size, Image.Resampling.LANCZOS)
-                elif base_pil.size != stroke_pil.size:
-                    stroke_pil = stroke_pil.resize(base_pil.size, Image.Resampling.LANCZOS)
+            if clean_pil is None:
+                vp = bg_meta.get("viewport", {})
+                w = int(vp.get("w", 1024))
+                h = int(vp.get("h", 1024))
+                clean_pil = Image.new("RGB", (w, h), (0, 0, 0))
 
-        # 4. 构建 Clean Image Tensor
-        clean_np = np.array(base_pil.convert("RGB")).astype(np.float32) / 255.0
-        clean_tensor = torch.from_numpy(clean_np).unsqueeze(0)
+            clean_np = np.array(clean_pil).astype(np.float32) / 255.0
+            clean_tensor = torch.from_numpy(clean_np).unsqueeze(0).contiguous()
 
-        # 5. 合成全要素 Annotated Image Tensor
-        annotated_pil = base_pil.copy()
-        if stroke_pil is not None:
-            annotated_pil.alpha_composite(stroke_pil)
+        B, H, W, _ = clean_tensor.shape
 
-        annotated_np = np.array(annotated_pil.convert("RGB")).astype(np.float32) / 255.0
-        annotated_tensor = torch.from_numpy(annotated_np).unsqueeze(0)
+        # 4. 计算绿幕扩边舞台尺寸与视口偏移 (支持四边独立绿幕扩边)
+        pad = bg_meta.get("stagePadding", {"top": 0, "right": 0, "bottom": 0, "left": 0})
+        vp_meta = bg_meta.get("viewport", {"w": W, "h": H})
+        vp_w = max(1, float(vp_meta.get("w", W)))
+        vp_h = max(1, float(vp_meta.get("h", H)))
 
-        return (clean_tensor, annotated_tensor)
+        # 按 clean_tensor 实际物理分辨率等比换算绿幕边距
+        scale_x = W / vp_w
+        scale_y = H / vp_h
+        pad_left = max(0, int(round(pad.get("left", 0) * scale_x)))
+        pad_right = max(0, int(round(pad.get("right", 0) * scale_x)))
+        pad_top = max(0, int(round(pad.get("top", 0) * scale_y)))
+        pad_bottom = max(0, int(round(pad.get("bottom", 0) * scale_y)))
+
+        stage_W = W + pad_left + pad_right
+        stage_H = H + pad_top + pad_bottom
+
+        # 5. 构建带绿幕备演区的合成舞台基底 stage_tensor [B, stage_H, stage_W, 3]
+        if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
+            # 标准绿幕色 #00B140 -> RGB (0, 177, 64)
+            chroma_color = torch.tensor([0.0, 177.0 / 255.0, 64.0 / 255.0], dtype=torch.float32).view(1, 1, 1, 3)
+            stage_tensor = chroma_color.expand(B, stage_H, stage_W, 3).clone().contiguous()
+            stage_tensor[:, pad_top:pad_top + H, pad_left:pad_left + W, :] = clean_tensor
+        else:
+            stage_tensor = clean_tensor.clone()
+
+        # 6. 若无笔触与贴纸，直接返回
+        if stroke_pil is None:
+            mask_tensor = torch.zeros((B, H, W), dtype=torch.float32)
+            return (clean_tensor, stage_tensor, mask_tensor)
+
+        if stroke_pil.size != (stage_W, stage_H):
+            stroke_pil = stroke_pil.resize((stage_W, stage_H), Image.Resampling.BILINEAR)
+
+        # 7. 向量化合成 annotated_tensor [B, stage_H, stage_W, 3]
+        stroke_np = np.array(stroke_pil).astype(np.float32) / 255.0
+        stroke_rgb = torch.from_numpy(stroke_np[..., :3]).contiguous()
+        stroke_alpha = torch.from_numpy(stroke_np[..., 3:4]).contiguous()
+
+        annotated_tensor = stage_tensor * (1.0 - stroke_alpha) + stroke_rgb * stroke_alpha
+        annotated_tensor = torch.clamp(annotated_tensor, 0.0, 1.0).contiguous()
+
+        # 8. 严格裁剪出与 clean_image (W, H) 1:1 对齐的 mask_tensor [B, H, W]
+        cropped_alpha = stroke_alpha[pad_top:pad_top + H, pad_left:pad_left + W, 0]
+        mask_tensor = cropped_alpha.unsqueeze(0).expand(B, -1, -1).contiguous()
+
+        del stroke_pil, stroke_np
+        return (clean_tensor, annotated_tensor, mask_tensor)
 
 NODE_CLASS_MAPPINGS = {
     "MiniMax_H3_CanvasAnnotator": MiniMaxH3CanvasAnnotator

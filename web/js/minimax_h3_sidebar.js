@@ -3,7 +3,6 @@ import { app } from "/scripts/app.js";
 // 全局保存分屏窗口句柄
 let splitWindow = null;
 
-// Toast 消息提示框
 function showToast(message) {
     let toast = document.getElementById('minimax-toast');
     if (!toast) {
@@ -17,20 +16,16 @@ function showToast(message) {
     setTimeout(() => { toast.style.opacity = '0'; }, 2300);
 }
 
-// 打开或跳转同一右侧独立分屏窗口
 function openRightWindow(url) {
     const screenWidth = window.screen.availWidth;
     const screenHeight = window.screen.availHeight;
-    const winWidth = Math.floor(screenWidth * 0.45); // 占用屏幕右侧 45% 宽度
+    const winWidth = Math.floor(screenWidth * 0.45);
     const winHeight = screenHeight;
     const left = screenWidth - winWidth;
     const top = 0;
 
     const windowFeatures = `width=${winWidth},height=${winHeight},left=${left},top=${top},resizable=yes,scrollbars=yes,location=yes,status=yes`;
-    
-    // 使用固定的窗口标识名 "Anima_Split_Window"，确保在同一窗口内直接跳转切换
     splitWindow = window.open(url, "Anima_Split_Window", windowFeatures);
-    
     if (splitWindow) {
         splitWindow.focus();
     }
@@ -40,11 +35,10 @@ app.registerExtension({
     name: "MiniMaxH3.Sidebar",
     
     async setup() {
-        // 🌟 1. 鼠标悬停屏幕右侧上半区（右边缘 30px 且 Y 轴在屏高上半部分），自动唤起子窗口
+        // 1. 鼠标悬停屏幕右侧边缘唤起分屏
         window.addEventListener("mousemove", (e) => {
             const isRightEdge = e.clientX >= window.innerWidth - 30;
             const isUpperHalf = e.clientY <= (window.innerHeight / 2);
-
             if (isRightEdge && isUpperHalf) {
                 if (splitWindow && !splitWindow.closed) {
                     splitWindow.focus();
@@ -52,18 +46,14 @@ app.registerExtension({
             }
         });
 
-        // 🛡️ 2. 全局监听图片拖拽，安全上传至后端并填充节点
+        // 2. 拖拽跨域图片通过后端安全中转存入 input/
         window.addEventListener("drop", async (event) => {
             let url = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list");
             const html = event.dataTransfer.getData("text/html");
-            
             if (html && (!url || !url.startsWith("http"))) {
                 const match = html.match(/src=["'](.*?)["']/);
-                if (match) {
-                    url = match[1];
-                }
+                if (match) url = match[1];
             }
-            
             if (!url || !url.startsWith("http")) return;
 
             const canvas = app.canvas;
@@ -71,7 +61,6 @@ app.registerExtension({
 
             const pos = canvas.convertEventToCanvasOffset({ clientX: event.clientX, clientY: event.clientY });
             const node = canvas.getNodeOnPos(pos[0], pos[1]);
-            
             if (!node?.widgets) return;
 
             const imageWidget = node.widgets.find(w => w.name === "image");
@@ -93,9 +82,7 @@ app.registerExtension({
                 
                 if (result.name) {
                     imageWidget.value = result.name;
-                    if (imageWidget.callback) {
-                        imageWidget.callback(result.name);
-                    }
+                    if (imageWidget.callback) imageWidget.callback(result.name);
                     node.setSize(node.computeSize());
                     app.graph.setDirtyCanvas(true, true);
                     showToast("✅ 云端图片已成功接入节点！");
@@ -113,25 +100,18 @@ app.registerExtension({
 
     async nodeCreated(node) {
         if (node.comfyClass === "MiniMaxH3PromptSynthesizer") {
-            
-            // 1. Danbooru 热门按钮
             node.addWidget(
                 "button", 
                 "🌐 打开 Danbooru 热门 (Hot)", 
                 null, 
-                () => {
-                    openRightWindow("https://danbooru.donmai.us/posts?tags=order%3Arank");
-                }
+                () => openRightWindow("https://danbooru.donmai.us/posts?tags=order%3Arank")
             );
 
-            // 2. E-Hentai AI 标签页按钮
             node.addWidget(
                 "button", 
                 "🔥 打开 E-Hentai (AI Generated)", 
                 null, 
-                () => {
-                    openRightWindow("https://e-hentai.org/?f_search=ai+generated");
-                }
+                () => openRightWindow("https://e-hentai.org/?f_search=ai+generated")
             );
         }
     }
