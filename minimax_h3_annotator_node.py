@@ -16,6 +16,18 @@ class MiniMaxH3CanvasAnnotator:
                 "image": ("IMAGE",),
                 "canvas_data": ("STRING", {"default": "", "multiline": True}),
                 "bg_data": ("STRING", {"default": "", "multiline": True}),
+                "clean_output_annotated": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "Annotated",
+                    "label_off": "Clean",
+                    "tooltip": "Switch clean_image output: Clean (original image) or Annotated (full stage with green screen padding, stickers, and annotations)."
+                }),
+                "annotated_output_annotated": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "Annotated",
+                    "label_off": "Clean",
+                    "tooltip": "Switch annotated_image output: Annotated (full stage with green screen padding, stickers, and annotations) or Clean (original image)."
+                }),
             }
         }
 
@@ -24,7 +36,14 @@ class MiniMaxH3CanvasAnnotator:
     FUNCTION = "process_canvas"
     CATEGORY = "MiniMax_H3"
 
-    def process_canvas(self, canvas_data="", bg_data="", image=None):
+    def process_canvas(
+        self,
+        canvas_data="",
+        bg_data="",
+        image=None,
+        clean_output_annotated=False,
+        annotated_output_annotated=True,
+    ):
         # 1. 解析前端传来的舞台元数据 (JSON 格式)
         bg_meta = {}
         if bg_data and bg_data.strip().startswith("{"):
@@ -45,7 +64,7 @@ class MiniMaxH3CanvasAnnotator:
 
         # 3. 构建 100% 纯净、无绿幕的 clean_tensor [B, H, W, 3]
         if image is not None:
-            clean_tensor = image.detach().cpu().contiguous().float()
+            clean_tensor = image[..., :3].detach().cpu().contiguous().float()
         else:
             clean_pil = None
             filename = bg_meta.get("filename")
@@ -60,9 +79,9 @@ class MiniMaxH3CanvasAnnotator:
                         print(f"[MiniMax H3 Canvas] Failed to load input file {filename}: {e}")
 
             if clean_pil is None:
-                vp = bg_meta.get("viewport", {})
-                w = int(vp.get("w", 1024))
-                h = int(vp.get("h", 1024))
+                vp = bg_meta.get("viewport") or {}
+                w = max(1, int(vp.get("w", 1024)))
+                h = max(1, int(vp.get("h", 1024)))
                 clean_pil = Image.new("RGB", (w, h), (0, 0, 0))
 
             clean_np = np.array(clean_pil).astype(np.float32) / 255.0
@@ -71,8 +90,8 @@ class MiniMaxH3CanvasAnnotator:
         B, H, W, _ = clean_tensor.shape
 
         # 4. 计算绿幕扩边舞台尺寸与视口偏移 (支持四边独立绿幕扩边)
-        pad = bg_meta.get("stagePadding", {"top": 0, "right": 0, "bottom": 0, "left": 0})
-        vp_meta = bg_meta.get("viewport", {"w": W, "h": H})
+        pad = bg_meta.get("stagePadding") or {"top": 0, "right": 0, "bottom": 0, "left": 0}
+        vp_meta = bg_meta.get("viewport") or {"w": W, "h": H}
         vp_w = max(1, float(vp_meta.get("w", W)))
         vp_h = max(1, float(vp_meta.get("h", H)))
 
@@ -87,37 +106,50 @@ class MiniMaxH3CanvasAnnotator:
         stage_W = W + pad_left + pad_right
         stage_H = H + pad_top + pad_bottom
 
-        # 5. 构建带绿幕备演区的合成舞台基底 stage_tensor [B, stage_H, stage_W, 3]
-        if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
-            # 标准绿幕色 #00B140 -> RGB (0, 177, 64)
-            chroma_color = torch.tensor([0.0, 177.0 / 255.0, 64.0 / 255.0], dtype=torch.float32).view(1, 1, 1, 3)
-            stage_tensor = chroma_color.expand(B, stage_H, stage_W, 3).clone().contiguous()
-            stage_tensor[:, pad_top:pad_top + H, pad_left:pad_left + W, :] = clean_tensor
-        else:
-            stage_tensor = clean_tensor.clone()
+        need_annotated = bool(clean_output_annotated) or bool(annotated_output_annotated)
 
-        # 6. 若无笔触与贴纸，直接返回
+        # 5. 构建带绿幕备演区的合成舞台基底 stage_tensor [B, stage_H, stage_W, 3]
+        stage_tensor = None
+        if need_annotated:
+            if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
+                # 标准绿幕色 #00B140 -> RGB (0, 177, 64)
+                chroma_color = torch.tensor([0.0, 177.0 / 255.0, 64.0 / 255.0], dtype=torch.float32).view(1, 1, 1, 3)
+                stage_tensor = chroma_color.expand(B, stage_H, stage_W, 3).clone().contiguous()
+                stage_tensor[:, pad_top:pad_top + H, pad_left:pad_left + W, :] = clean_tensor
+            else:
+                stage_tensor = clean_tensor.clone()
+
+        # 6. 若无笔触与贴纸，直接按开关路由输出
         if stroke_pil is None:
             mask_tensor = torch.zeros((B, H, W), dtype=torch.float32)
-            return (clean_tensor, stage_tensor, mask_tensor)
+            annotated_out = stage_tensor if stage_tensor is not None else clean_tensor
+        else:
+            if stroke_pil.size != (stage_W, stage_H):
+                stroke_pil = stroke_pil.resize((stage_W, stage_H), Image.Resampling.BILINEAR)
 
-        if stroke_pil.size != (stage_W, stage_H):
-            stroke_pil = stroke_pil.resize((stage_W, stage_H), Image.Resampling.BILINEAR)
+            # 7. 向量化合成 annotated_tensor [B, stage_H, stage_W, 3]
+            stroke_np = np.array(stroke_pil).astype(np.float32) / 255.0
+            stroke_alpha = torch.from_numpy(stroke_np[..., 3:4]).contiguous()
 
-        # 7. 向量化合成 annotated_tensor [B, stage_H, stage_W, 3]
-        stroke_np = np.array(stroke_pil).astype(np.float32) / 255.0
-        stroke_rgb = torch.from_numpy(stroke_np[..., :3]).contiguous()
-        stroke_alpha = torch.from_numpy(stroke_np[..., 3:4]).contiguous()
+            if need_annotated:
+                stroke_rgb = torch.from_numpy(stroke_np[..., :3]).contiguous()
+                annotated_out = stage_tensor * (1.0 - stroke_alpha) + stroke_rgb * stroke_alpha
+                annotated_out = torch.clamp(annotated_out, 0.0, 1.0).contiguous()
+            else:
+                annotated_out = clean_tensor
 
-        annotated_tensor = stage_tensor * (1.0 - stroke_alpha) + stroke_rgb * stroke_alpha
-        annotated_tensor = torch.clamp(annotated_tensor, 0.0, 1.0).contiguous()
+            # 8. 严格裁剪出与 clean_image (W, H) 1:1 对齐的 mask_tensor [B, H, W]
+            cropped_alpha = stroke_alpha[pad_top:pad_top + H, pad_left:pad_left + W, 0]
+            mask_tensor = cropped_alpha.unsqueeze(0).expand(B, -1, -1).contiguous()
 
-        # 8. 严格裁剪出与 clean_image (W, H) 1:1 对齐的 mask_tensor [B, H, W]
-        cropped_alpha = stroke_alpha[pad_top:pad_top + H, pad_left:pad_left + W, 0]
-        mask_tensor = cropped_alpha.unsqueeze(0).expand(B, -1, -1).contiguous()
+            del stroke_pil, stroke_np
 
-        del stroke_pil, stroke_np
-        return (clean_tensor, annotated_tensor, mask_tensor)
+        out_clean = annotated_out if clean_output_annotated else clean_tensor
+        out_annotated = annotated_out if annotated_output_annotated else clean_tensor
+        if out_clean is out_annotated:
+            out_annotated = out_annotated.clone()
+
+        return (out_clean, out_annotated, mask_tensor)
 
 NODE_CLASS_MAPPINGS = {
     "MiniMax_H3_CanvasAnnotator": MiniMaxH3CanvasAnnotator
