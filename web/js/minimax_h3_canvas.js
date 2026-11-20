@@ -20,6 +20,11 @@ app.registerExtension({
         hideWidget(canvasDataWidget);
         hideWidget(bgDataWidget);
 
+        const cleanOutputWidget = node.widgets?.find(w => w.name === "clean_output_annotated");
+        const annotatedOutputWidget = node.widgets?.find(w => w.name === "annotated_output_annotated");
+        let cleanOutputAnnotated = cleanOutputWidget && typeof cleanOutputWidget.value === "boolean" ? cleanOutputWidget.value : false;
+        let annotatedOutputAnnotated = annotatedOutputWidget && typeof annotatedOutputWidget.value === "boolean" ? annotatedOutputWidget.value : true;
+
         // Main DOM container
         const container = document.createElement("div");
         container.tabIndex = 0;
@@ -377,6 +382,12 @@ app.registerExtension({
         const saveLightweightState = () => {
             if (canvasDataWidget) canvasDataWidget.value = "";
             if (bgDataWidget) bgDataWidget.value = "";
+            if (cleanOutputWidget && typeof cleanOutputWidget.value === "boolean") {
+                cleanOutputAnnotated = cleanOutputWidget.value;
+            }
+            if (annotatedOutputWidget && typeof annotatedOutputWidget.value === "boolean") {
+                annotatedOutputAnnotated = annotatedOutputWidget.value;
+            }
 
             node.properties = node.properties || {};
             node.properties["canvas_state"] = JSON.stringify({
@@ -388,7 +399,9 @@ app.registerExtension({
                     rotation: st.rotation, flipX: st.flipX, flipY: st.flipY,
                     opacity: st.opacity, visible: st.visible
                 })),
-                uploadedBgFilename
+                uploadedBgFilename,
+                cleanOutputAnnotated,
+                annotatedOutputAnnotated
             });
         };
 
@@ -1451,22 +1464,110 @@ app.registerExtension({
         strokeSlider.oninput = (e) => brushSize = parseInt(e.target.value, 10);
         paletteBar.appendChild(curColorBox); paletteBar.appendChild(paletteColors); paletteBar.appendChild(strokeSlider);
 
-        // Bottom action bar
+        // Bottom action bar (Output switches + History actions)
         const bottomBar = document.createElement("div");
-        bottomBar.style.cssText = "display: flex; gap: 4px; align-items: center; justify-content: flex-end;";
+        bottomBar.style.cssText = "display: flex; gap: 4px; align-items: center; justify-content: space-between; flex-wrap: wrap;";
+
+        const outputSwitchGroup = document.createElement("div");
+        outputSwitchGroup.style.cssText = "display: flex; gap: 4px; align-items: center;";
+
+        const isCleanOutputAnnotated = () => (cleanOutputWidget && typeof cleanOutputWidget.value === "boolean")
+            ? cleanOutputWidget.value
+            : Boolean(cleanOutputAnnotated);
+        const isAnnotatedOutputAnnotated = () => (annotatedOutputWidget && typeof annotatedOutputWidget.value === "boolean")
+            ? annotatedOutputWidget.value
+            : Boolean(annotatedOutputAnnotated);
+
+        const btnCleanOutput = document.createElement("button");
+        btnCleanOutput.title = "Switch clean_image output: Clean (original) vs Annot (same as annotated_image)";
+
+        const btnAnnotatedOutput = document.createElement("button");
+        btnAnnotatedOutput.title = "Switch annotated_image output: Annot (annotated stage) vs Clean (original)";
+
+        const updateOutputSwitchButtons = () => {
+            const cleanAnnot = isCleanOutputAnnotated();
+            cleanOutputAnnotated = cleanAnnot;
+            btnCleanOutput.textContent = cleanAnnot ? "🖼️ Clean: Annot" : "🖼️ Clean: Clean";
+            btnCleanOutput.style.cssText = cleanAnnot
+                ? "padding: 3px 6px; min-width: 96px; text-align: center; background: #0284c7; color: #ffffff; border: 1px solid #38bdf8; border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600;"
+                : "padding: 3px 6px; min-width: 96px; text-align: center; background: #3f3f46; color: #d4d4d8; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;";
+
+            const annotAnnot = isAnnotatedOutputAnnotated();
+            annotatedOutputAnnotated = annotAnnot;
+            btnAnnotatedOutput.textContent = annotAnnot ? "🎨 Annot: Annot" : "🎨 Annot: Clean";
+            btnAnnotatedOutput.style.cssText = annotAnnot
+                ? "padding: 3px 6px; min-width: 96px; text-align: center; background: #7c3aed; color: #ffffff; border: 1px solid #a78bfa; border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600;"
+                : "padding: 3px 6px; min-width: 96px; text-align: center; background: #3f3f46; color: #d4d4d8; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;";
+        };
+
+        let isSyncingOutputSwitch = false;
+        const setOutputWidgetValue = (isCleanTarget, nextVal) => {
+            isSyncingOutputSwitch = true;
+            try {
+                if (isCleanTarget) {
+                    cleanOutputAnnotated = nextVal;
+                    if (cleanOutputWidget) {
+                        cleanOutputWidget.value = nextVal;
+                        if (typeof cleanOutputWidget.callback === "function") {
+                            cleanOutputWidget.callback(nextVal, app.canvas, node);
+                        }
+                    }
+                } else {
+                    annotatedOutputAnnotated = nextVal;
+                    if (annotatedOutputWidget) {
+                        annotatedOutputWidget.value = nextVal;
+                        if (typeof annotatedOutputWidget.callback === "function") {
+                            annotatedOutputWidget.callback(nextVal, app.canvas, node);
+                        }
+                    }
+                }
+            } finally {
+                isSyncingOutputSwitch = false;
+            }
+            updateOutputSwitchButtons();
+            saveLightweightState();
+            app.graph?.setDirtyCanvas(true, true);
+        };
+
+        btnCleanOutput.onclick = () => setOutputWidgetValue(true, !isCleanOutputAnnotated());
+        btnAnnotatedOutput.onclick = () => setOutputWidgetValue(false, !isAnnotatedOutputAnnotated());
+
+        const hookOutputWidgetCallback = (widget) => {
+            if (!widget) return;
+            const origCallback = widget.callback;
+            widget.callback = function () {
+                if (origCallback) origCallback.apply(this, arguments);
+                if (!isSyncingOutputSwitch) {
+                    updateOutputSwitchButtons();
+                    saveLightweightState();
+                }
+            };
+        };
+        hookOutputWidgetCallback(cleanOutputWidget);
+        hookOutputWidgetCallback(annotatedOutputWidget);
+        updateOutputSwitchButtons();
+
+        outputSwitchGroup.appendChild(btnCleanOutput);
+        outputSwitchGroup.appendChild(btnAnnotatedOutput);
+
+        const historyGroup = document.createElement("div");
+        historyGroup.style.cssText = "display: flex; gap: 4px; align-items: center; margin-left: auto;";
 
         const btnUndo = document.createElement("button"); btnUndo.textContent = "↩️ Undo";
-        btnUndo.style.cssText = "padding: 3px 8px; background: #3f3f46; color: #fff; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;"; btnUndo.onclick = undo;
+        btnUndo.style.cssText = "padding: 3px 6px; background: #3f3f46; color: #fff; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;"; btnUndo.onclick = undo;
         const btnRedo = document.createElement("button"); btnRedo.textContent = "↪️ Redo";
-        btnRedo.style.cssText = "padding: 3px 8px; background: #3f3f46; color: #fff; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;"; btnRedo.onclick = redo;
-        const btnClear = document.createElement("button"); btnClear.textContent = "🗑️ Clear Annotations";
-        btnClear.style.cssText = "padding: 3px 8px; background: #7f1d1d; color: #fecaca; border: 1px solid #991b1b; border-radius: 3px; cursor: pointer; font-size: 11px;";
+        btnRedo.style.cssText = "padding: 3px 6px; background: #3f3f46; color: #fff; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;"; btnRedo.onclick = redo;
+        const btnClear = document.createElement("button"); btnClear.textContent = "🗑️ Clear";
+        btnClear.title = "Clear Annotations";
+        btnClear.style.cssText = "padding: 3px 6px; background: #7f1d1d; color: #fecaca; border: 1px solid #991b1b; border-radius: 3px; cursor: pointer; font-size: 11px;";
         btnClear.onclick = () => { saveState(); elements = []; sTags = []; aTags = []; frames = []; rebuildDrawCanvas(); render(); saveLightweightState(); };
 
         const updateHistoryButtons = () => { btnUndo.style.opacity = undoStack.length > 0 ? "1" : "0.5"; btnRedo.style.opacity = redoStack.length > 0 ? "1" : "0.5"; };
         updateHistoryButtons();
 
-        bottomBar.appendChild(btnUndo); bottomBar.appendChild(btnRedo); bottomBar.appendChild(btnClear);
+        historyGroup.appendChild(btnUndo); historyGroup.appendChild(btnRedo); historyGroup.appendChild(btnClear);
+        bottomBar.appendChild(outputSwitchGroup);
+        bottomBar.appendChild(historyGroup);
 
         container.appendChild(toolBar);
         container.appendChild(canvas);
@@ -1476,11 +1577,31 @@ app.registerExtension({
 
         node.addDOMWidget("canvas_widget", "Canvas", container, { serialize: false });
 
+        const ensureOutputSwitchDefaults = () => {
+            if (cleanOutputWidget && typeof cleanOutputWidget.value !== "boolean") {
+                cleanOutputWidget.value = cleanOutputAnnotated;
+            }
+            if (annotatedOutputWidget && typeof annotatedOutputWidget.value !== "boolean") {
+                annotatedOutputWidget.value = annotatedOutputAnnotated;
+            }
+            updateOutputSwitchButtons();
+        };
+
         // Restore State from Lightweight Properties
         const restoreFromProperties = () => {
+            ensureOutputSwitchDefaults();
             if (node.properties && node.properties["canvas_state"]) {
                 try {
                     const state = JSON.parse(node.properties["canvas_state"]);
+                    if (typeof state.cleanOutputAnnotated === "boolean") {
+                        cleanOutputAnnotated = state.cleanOutputAnnotated;
+                        if (cleanOutputWidget) cleanOutputWidget.value = cleanOutputAnnotated;
+                    }
+                    if (typeof state.annotatedOutputAnnotated === "boolean") {
+                        annotatedOutputAnnotated = state.annotatedOutputAnnotated;
+                        if (annotatedOutputWidget) annotatedOutputWidget.value = annotatedOutputAnnotated;
+                    }
+                    ensureOutputSwitchDefaults();
                     if (state.elements) elements = state.elements;
                     if (state.sTags) sTags = state.sTags;
                     if (state.aTags) aTags = state.aTags;
@@ -1526,11 +1647,12 @@ app.registerExtension({
         const origOnConfigure = node.onConfigure;
         node.onConfigure = function (info) {
             if (origOnConfigure) origOnConfigure.apply(this, arguments);
+            ensureOutputSwitchDefaults();
             setTimeout(restoreFromProperties, 100);
         };
 
         node.onResize = () => render();
-        node.size = [460, 640];
+        node.size = [460, 690];
         setTimeout(render, 100);
     }
 });
