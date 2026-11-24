@@ -7,6 +7,21 @@ import numpy as np
 from PIL import Image, ImageOps
 import folder_paths
 
+
+def _normalize_output_mode(val, default_mode="Clean"):
+    if isinstance(val, bool):
+        return "Annotated" if val else "Clean"
+    if isinstance(val, str):
+        v = val.strip().lower()
+        if v in ("annotated", "annot", "true", "1"):
+            return "Annotated"
+        if v in ("clean", "original", "false", "0"):
+            return "Clean"
+        if v in ("off", "none", "disable", "disabled", "block"):
+            return "Off"
+    return default_mode
+
+
 class MiniMaxH3CanvasAnnotator:
     @classmethod
     def INPUT_TYPES(s):
@@ -16,20 +31,25 @@ class MiniMaxH3CanvasAnnotator:
                 "image": ("IMAGE",),
                 "canvas_data": ("STRING", {"default": "", "multiline": True}),
                 "bg_data": ("STRING", {"default": "", "multiline": True}),
-                "clean_output_annotated": ("BOOLEAN", {
-                    "default": False,
-                    "label_on": "Annotated",
-                    "label_off": "Clean",
-                    "tooltip": "Switch clean_image output: Clean (original image) or Annotated (full stage with green screen padding, stickers, and annotations)."
+                "clean_output_annotated": (["Clean", "Annotated", "Off"], {
+                    "default": "Clean",
+                    "tooltip": "Select clean_image output mode: Clean (original image), Annotated (full stage with green screen padding, stickers, and annotations), or Off (block output signal to downstream nodes)."
                 }),
-                "annotated_output_annotated": ("BOOLEAN", {
-                    "default": True,
-                    "label_on": "Annotated",
-                    "label_off": "Clean",
-                    "tooltip": "Switch annotated_image output: Annotated (full stage with green screen padding, stickers, and annotations) or Clean (original image)."
+                "annotated_output_annotated": (["Annotated", "Clean", "Off"], {
+                    "default": "Annotated",
+                    "tooltip": "Select annotated_image output mode: Annotated (full stage with green screen padding, stickers, and annotations), Clean (original image), or Off (block output signal to downstream nodes)."
                 }),
             }
         }
+
+    @classmethod
+    def VALIDATE_INPUTS(s, clean_output_annotated="Clean", annotated_output_annotated="Annotated", **kwargs):
+        valid_modes = {"Clean", "Annotated", "Off"}
+        if _normalize_output_mode(clean_output_annotated, "") not in valid_modes:
+            return f"Invalid clean_output_annotated mode: {clean_output_annotated}"
+        if _normalize_output_mode(annotated_output_annotated, "") not in valid_modes:
+            return f"Invalid annotated_output_annotated mode: {annotated_output_annotated}"
+        return True
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "MASK")
     RETURN_NAMES = ("clean_image", "annotated_image", "mask")
@@ -41,8 +61,8 @@ class MiniMaxH3CanvasAnnotator:
         canvas_data="",
         bg_data="",
         image=None,
-        clean_output_annotated=False,
-        annotated_output_annotated=True,
+        clean_output_annotated="Clean",
+        annotated_output_annotated="Annotated",
     ):
         # 1. 解析前端传来的舞台元数据 (JSON 格式)
         bg_meta = {}
@@ -106,7 +126,9 @@ class MiniMaxH3CanvasAnnotator:
         stage_W = W + pad_left + pad_right
         stage_H = H + pad_top + pad_bottom
 
-        need_annotated = bool(clean_output_annotated) or bool(annotated_output_annotated)
+        clean_mode = _normalize_output_mode(clean_output_annotated, "Clean")
+        annotated_mode = _normalize_output_mode(annotated_output_annotated, "Annotated")
+        need_annotated = (clean_mode == "Annotated") or (annotated_mode == "Annotated")
 
         # 5. 构建带绿幕备演区的合成舞台基底 stage_tensor [B, stage_H, stage_W, 3]
         stage_tensor = None
@@ -144,9 +166,16 @@ class MiniMaxH3CanvasAnnotator:
 
             del stroke_pil, stroke_np
 
-        out_clean = annotated_out if clean_output_annotated else clean_tensor
-        out_annotated = annotated_out if annotated_output_annotated else clean_tensor
-        if out_clean is out_annotated:
+        def _select_port_output(mode):
+            if mode == "Off":
+                return None
+            if mode == "Annotated":
+                return annotated_out
+            return clean_tensor
+
+        out_clean = _select_port_output(clean_mode)
+        out_annotated = _select_port_output(annotated_mode)
+        if isinstance(out_clean, torch.Tensor) and out_clean is out_annotated:
             out_annotated = out_annotated.clone()
 
         return (out_clean, out_annotated, mask_tensor)

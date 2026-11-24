@@ -20,10 +20,21 @@ app.registerExtension({
         hideWidget(canvasDataWidget);
         hideWidget(bgDataWidget);
 
+        const normalizeOutputMode = (val, defaultMode) => {
+            if (typeof val === "boolean") return val ? "Annotated" : "Clean";
+            if (typeof val === "string") {
+                const v = val.trim().toLowerCase();
+                if (v === "annotated" || v === "annot" || v === "true") return "Annotated";
+                if (v === "clean" || v === "original" || v === "false") return "Clean";
+                if (v === "off" || v === "none" || v === "disabled") return "Off";
+            }
+            return defaultMode;
+        };
+
         const cleanOutputWidget = node.widgets?.find(w => w.name === "clean_output_annotated");
         const annotatedOutputWidget = node.widgets?.find(w => w.name === "annotated_output_annotated");
-        let cleanOutputAnnotated = cleanOutputWidget && typeof cleanOutputWidget.value === "boolean" ? cleanOutputWidget.value : false;
-        let annotatedOutputAnnotated = annotatedOutputWidget && typeof annotatedOutputWidget.value === "boolean" ? annotatedOutputWidget.value : true;
+        let cleanOutputMode = normalizeOutputMode(cleanOutputWidget?.value, "Clean");
+        let annotatedOutputMode = normalizeOutputMode(annotatedOutputWidget?.value, "Annotated");
 
         // Main DOM container
         const container = document.createElement("div");
@@ -382,11 +393,11 @@ app.registerExtension({
         const saveLightweightState = () => {
             if (canvasDataWidget) canvasDataWidget.value = "";
             if (bgDataWidget) bgDataWidget.value = "";
-            if (cleanOutputWidget && typeof cleanOutputWidget.value === "boolean") {
-                cleanOutputAnnotated = cleanOutputWidget.value;
+            if (cleanOutputWidget && cleanOutputWidget.value !== undefined) {
+                cleanOutputMode = normalizeOutputMode(cleanOutputWidget.value, cleanOutputMode);
             }
-            if (annotatedOutputWidget && typeof annotatedOutputWidget.value === "boolean") {
-                annotatedOutputAnnotated = annotatedOutputWidget.value;
+            if (annotatedOutputWidget && annotatedOutputWidget.value !== undefined) {
+                annotatedOutputMode = normalizeOutputMode(annotatedOutputWidget.value, annotatedOutputMode);
             }
 
             node.properties = node.properties || {};
@@ -400,8 +411,8 @@ app.registerExtension({
                     opacity: st.opacity, visible: st.visible
                 })),
                 uploadedBgFilename,
-                cleanOutputAnnotated,
-                annotatedOutputAnnotated
+                cleanOutputMode,
+                annotatedOutputMode
             });
         };
 
@@ -1471,53 +1482,169 @@ app.registerExtension({
         const outputSwitchGroup = document.createElement("div");
         outputSwitchGroup.style.cssText = "display: flex; gap: 4px; align-items: center;";
 
-        const isCleanOutputAnnotated = () => (cleanOutputWidget && typeof cleanOutputWidget.value === "boolean")
-            ? cleanOutputWidget.value
-            : Boolean(cleanOutputAnnotated);
-        const isAnnotatedOutputAnnotated = () => (annotatedOutputWidget && typeof annotatedOutputWidget.value === "boolean")
-            ? annotatedOutputWidget.value
-            : Boolean(annotatedOutputAnnotated);
+        const getCleanOutputMode = () => cleanOutputWidget && cleanOutputWidget.value !== undefined
+            ? normalizeOutputMode(cleanOutputWidget.value, cleanOutputMode)
+            : cleanOutputMode;
+        const getAnnotatedOutputMode = () => annotatedOutputWidget && annotatedOutputWidget.value !== undefined
+            ? normalizeOutputMode(annotatedOutputWidget.value, annotatedOutputMode)
+            : annotatedOutputMode;
 
         const btnCleanOutput = document.createElement("button");
-        btnCleanOutput.title = "Switch clean_image output: Clean (original) vs Annot (same as annotated_image)";
+        btnCleanOutput.title = "Cycle clean_image output: Clean (original) → Annotated (stage) → Off (block output signal)";
 
         const btnAnnotatedOutput = document.createElement("button");
-        btnAnnotatedOutput.title = "Switch annotated_image output: Annot (annotated stage) vs Clean (original)";
+        btnAnnotatedOutput.title = "Cycle annotated_image output: Annotated (stage) → Clean (original) → Off (block output signal)";
 
         const updateOutputSwitchButtons = () => {
-            const cleanAnnot = isCleanOutputAnnotated();
-            cleanOutputAnnotated = cleanAnnot;
-            btnCleanOutput.textContent = cleanAnnot ? "🖼️ Clean: Annot" : "🖼️ Clean: Clean";
-            btnCleanOutput.style.cssText = cleanAnnot
-                ? "padding: 3px 6px; min-width: 96px; text-align: center; background: #0284c7; color: #ffffff; border: 1px solid #38bdf8; border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600;"
-                : "padding: 3px 6px; min-width: 96px; text-align: center; background: #3f3f46; color: #d4d4d8; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;";
+            const cleanM = getCleanOutputMode();
+            cleanOutputMode = cleanM;
+            if (cleanM === "Annotated") {
+                btnCleanOutput.textContent = "🖼️ Clean: Annot";
+                btnCleanOutput.style.cssText = "padding: 3px 6px; min-width: 96px; text-align: center; background: #0284c7; color: #ffffff; border: 1px solid #38bdf8; border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600;";
+            } else if (cleanM === "Off") {
+                btnCleanOutput.textContent = "🚫 Clean: Off";
+                btnCleanOutput.style.cssText = "padding: 3px 6px; min-width: 96px; text-align: center; background: #27272a; color: #f87171; border: 1px solid #7f1d1d; border-radius: 3px; cursor: pointer; font-size: 11px;";
+            } else {
+                btnCleanOutput.textContent = "🖼️ Clean: Clean";
+                btnCleanOutput.style.cssText = "padding: 3px 6px; min-width: 96px; text-align: center; background: #3f3f46; color: #d4d4d8; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;";
+            }
 
-            const annotAnnot = isAnnotatedOutputAnnotated();
-            annotatedOutputAnnotated = annotAnnot;
-            btnAnnotatedOutput.textContent = annotAnnot ? "🎨 Annot: Annot" : "🎨 Annot: Clean";
-            btnAnnotatedOutput.style.cssText = annotAnnot
-                ? "padding: 3px 6px; min-width: 96px; text-align: center; background: #7c3aed; color: #ffffff; border: 1px solid #a78bfa; border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600;"
-                : "padding: 3px 6px; min-width: 96px; text-align: center; background: #3f3f46; color: #d4d4d8; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;";
+            const annotM = getAnnotatedOutputMode();
+            annotatedOutputMode = annotM;
+            if (annotM === "Annotated") {
+                btnAnnotatedOutput.textContent = "🎨 Annot: Annot";
+                btnAnnotatedOutput.style.cssText = "padding: 3px 6px; min-width: 96px; text-align: center; background: #7c3aed; color: #ffffff; border: 1px solid #a78bfa; border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600;";
+            } else if (annotM === "Off") {
+                btnAnnotatedOutput.textContent = "🚫 Annot: Off";
+                btnAnnotatedOutput.style.cssText = "padding: 3px 6px; min-width: 96px; text-align: center; background: #27272a; color: #f87171; border: 1px solid #7f1d1d; border-radius: 3px; cursor: pointer; font-size: 11px;";
+            } else {
+                btnAnnotatedOutput.textContent = "🎨 Annot: Clean";
+                btnAnnotatedOutput.style.cssText = "padding: 3px 6px; min-width: 96px; text-align: center; background: #3f3f46; color: #d4d4d8; border: 1px solid #52525b; border-radius: 3px; cursor: pointer; font-size: 11px;";
+            }
+        };
+
+        const getGraphLink = (linkId) => {
+            if (!app.graph || linkId == null) return null;
+            if (typeof app.graph.getLink === "function") return app.graph.getLink(linkId);
+            if (app.graph.links instanceof Map) return app.graph.links.get(linkId);
+            return app.graph.links ? app.graph.links[linkId] : null;
+        };
+
+        const isIncomingImageLinkActive = (link, visited = new Set()) => {
+            if (!link || visited.has(link.id)) return false;
+            visited.add(link.id);
+            const originNode = app.graph?.getNodeById(link.origin_id);
+            if (!originNode) return false;
+            if (originNode.id === node.id) {
+                if (link.origin_slot === 0) return getCleanOutputMode() !== "Off";
+                if (link.origin_slot === 1) return getAnnotatedOutputMode() !== "Off";
+                return false;
+            }
+            if (originNode.type === "Reroute" || originNode.comfyClass === "Reroute") {
+                const inLinkId = originNode.inputs?.[0]?.link;
+                return inLinkId != null ? isIncomingImageLinkActive(getGraphLink(inLinkId), visited) : false;
+            }
+            return originNode.mode === 0;
+        };
+
+        const syncDownstreamOutputNodes = () => {
+            if (!app.graph || !Array.isArray(node.outputs)) return;
+            const queue = [];
+            const visitedNodes = new Set();
+
+            for (const slotIdx of [0, 1]) {
+                const outSlot = node.outputs[slotIdx];
+                const links = outSlot?.links;
+                if (!links || !links.length) continue;
+                for (const linkId of links) {
+                    const link = getGraphLink(linkId);
+                    if (link && link.target_id != null) {
+                        queue.push(link.target_id);
+                    }
+                }
+            }
+
+            while (queue.length > 0) {
+                const targetId = queue.shift();
+                if (visitedNodes.has(targetId)) continue;
+                visitedNodes.add(targetId);
+
+                const targetNode = app.graph.getNodeById(targetId);
+                if (!targetNode) continue;
+
+                if (targetNode.type === "Reroute" || targetNode.comfyClass === "Reroute") {
+                    const outLinks = targetNode.outputs?.[0]?.links;
+                    if (outLinks && outLinks.length) {
+                        for (const lId of outLinks) {
+                            const l = getGraphLink(lId);
+                            if (l && l.target_id != null) queue.push(l.target_id);
+                        }
+                    }
+                    continue;
+                }
+
+                let hasConnectedImageInput = false;
+                let hasActiveImageInput = false;
+                if (Array.isArray(targetNode.inputs)) {
+                    for (const inp of targetNode.inputs) {
+                        if (inp.link == null) continue;
+                        const inLink = getGraphLink(inp.link);
+                        if (!inLink) continue;
+                        const fromThisCanvasImage = inLink.origin_id === node.id && (inLink.origin_slot === 0 || inLink.origin_slot === 1);
+                        const inType = String(inp.type || "*");
+                        if (!fromThisCanvasImage && !inType.includes("IMAGE") && inType !== "*") continue;
+
+                        hasConnectedImageInput = true;
+                        if (isIncomingImageLinkActive(inLink)) {
+                            hasActiveImageInput = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (hasConnectedImageInput) {
+                    const prevMode = targetNode.mode;
+                    if (!hasActiveImageInput) {
+                        if (targetNode.mode === 0) {
+                            targetNode.mode = 2; // ComfyUI Mute (停用)
+                        }
+                    } else {
+                        if (targetNode.mode === 2 || targetNode.mode === 4) {
+                            targetNode.mode = 0; // ComfyUI Active (启用)
+                        }
+                    }
+                    if (targetNode.mode !== prevMode && Array.isArray(targetNode.outputs)) {
+                        for (const outSlot of targetNode.outputs) {
+                            if (!outSlot?.links) continue;
+                            for (const lId of outSlot.links) {
+                                const l = getGraphLink(lId);
+                                if (l && l.target_id != null) queue.push(l.target_id);
+                            }
+                        }
+                    }
+                }
+            }
+            app.graph.setDirtyCanvas(true, true);
         };
 
         let isSyncingOutputSwitch = false;
-        const setOutputWidgetValue = (isCleanTarget, nextVal) => {
+        const setOutputWidgetValue = (isCleanTarget, nextMode) => {
             isSyncingOutputSwitch = true;
             try {
                 if (isCleanTarget) {
-                    cleanOutputAnnotated = nextVal;
+                    cleanOutputMode = nextMode;
                     if (cleanOutputWidget) {
-                        cleanOutputWidget.value = nextVal;
+                        cleanOutputWidget.value = nextMode;
                         if (typeof cleanOutputWidget.callback === "function") {
-                            cleanOutputWidget.callback(nextVal, app.canvas, node);
+                            cleanOutputWidget.callback(nextMode, app.canvas, node);
                         }
                     }
                 } else {
-                    annotatedOutputAnnotated = nextVal;
+                    annotatedOutputMode = nextMode;
                     if (annotatedOutputWidget) {
-                        annotatedOutputWidget.value = nextVal;
+                        annotatedOutputWidget.value = nextMode;
                         if (typeof annotatedOutputWidget.callback === "function") {
-                            annotatedOutputWidget.callback(nextVal, app.canvas, node);
+                            annotatedOutputWidget.callback(nextMode, app.canvas, node);
                         }
                     }
                 }
@@ -1525,12 +1652,24 @@ app.registerExtension({
                 isSyncingOutputSwitch = false;
             }
             updateOutputSwitchButtons();
+            syncDownstreamOutputNodes();
             saveLightweightState();
             app.graph?.setDirtyCanvas(true, true);
         };
 
-        btnCleanOutput.onclick = () => setOutputWidgetValue(true, !isCleanOutputAnnotated());
-        btnAnnotatedOutput.onclick = () => setOutputWidgetValue(false, !isAnnotatedOutputAnnotated());
+        const CLEAN_CYCLE = ["Clean", "Annotated", "Off"];
+        const ANNOT_CYCLE = ["Annotated", "Clean", "Off"];
+
+        btnCleanOutput.onclick = () => {
+            const cur = getCleanOutputMode();
+            const next = CLEAN_CYCLE[(CLEAN_CYCLE.indexOf(cur) + 1) % CLEAN_CYCLE.length];
+            setOutputWidgetValue(true, next);
+        };
+        btnAnnotatedOutput.onclick = () => {
+            const cur = getAnnotatedOutputMode();
+            const next = ANNOT_CYCLE[(ANNOT_CYCLE.indexOf(cur) + 1) % ANNOT_CYCLE.length];
+            setOutputWidgetValue(false, next);
+        };
 
         const hookOutputWidgetCallback = (widget) => {
             if (!widget) return;
@@ -1539,6 +1678,7 @@ app.registerExtension({
                 if (origCallback) origCallback.apply(this, arguments);
                 if (!isSyncingOutputSwitch) {
                     updateOutputSwitchButtons();
+                    syncDownstreamOutputNodes();
                     saveLightweightState();
                 }
             };
@@ -1578,13 +1718,14 @@ app.registerExtension({
         node.addDOMWidget("canvas_widget", "Canvas", container, { serialize: false });
 
         const ensureOutputSwitchDefaults = () => {
-            if (cleanOutputWidget && typeof cleanOutputWidget.value !== "boolean") {
-                cleanOutputWidget.value = cleanOutputAnnotated;
+            if (cleanOutputWidget) {
+                cleanOutputWidget.value = normalizeOutputMode(cleanOutputWidget.value, cleanOutputMode);
             }
-            if (annotatedOutputWidget && typeof annotatedOutputWidget.value !== "boolean") {
-                annotatedOutputWidget.value = annotatedOutputAnnotated;
+            if (annotatedOutputWidget) {
+                annotatedOutputWidget.value = normalizeOutputMode(annotatedOutputWidget.value, annotatedOutputMode);
             }
             updateOutputSwitchButtons();
+            syncDownstreamOutputNodes();
         };
 
         // Restore State from Lightweight Properties
@@ -1593,13 +1734,15 @@ app.registerExtension({
             if (node.properties && node.properties["canvas_state"]) {
                 try {
                     const state = JSON.parse(node.properties["canvas_state"]);
-                    if (typeof state.cleanOutputAnnotated === "boolean") {
-                        cleanOutputAnnotated = state.cleanOutputAnnotated;
-                        if (cleanOutputWidget) cleanOutputWidget.value = cleanOutputAnnotated;
+                    const rawClean = state.cleanOutputMode !== undefined ? state.cleanOutputMode : state.cleanOutputAnnotated;
+                    if (rawClean !== undefined) {
+                        cleanOutputMode = normalizeOutputMode(rawClean, "Clean");
+                        if (cleanOutputWidget) cleanOutputWidget.value = cleanOutputMode;
                     }
-                    if (typeof state.annotatedOutputAnnotated === "boolean") {
-                        annotatedOutputAnnotated = state.annotatedOutputAnnotated;
-                        if (annotatedOutputWidget) annotatedOutputWidget.value = annotatedOutputAnnotated;
+                    const rawAnnot = state.annotatedOutputMode !== undefined ? state.annotatedOutputMode : state.annotatedOutputAnnotated;
+                    if (rawAnnot !== undefined) {
+                        annotatedOutputMode = normalizeOutputMode(rawAnnot, "Annotated");
+                        if (annotatedOutputWidget) annotatedOutputWidget.value = annotatedOutputMode;
                     }
                     ensureOutputSwitchDefaults();
                     if (state.elements) elements = state.elements;
@@ -1649,6 +1792,12 @@ app.registerExtension({
             if (origOnConfigure) origOnConfigure.apply(this, arguments);
             ensureOutputSwitchDefaults();
             setTimeout(restoreFromProperties, 100);
+        };
+
+        const origOnConnectionsChange = node.onConnectionsChange;
+        node.onConnectionsChange = function () {
+            if (origOnConnectionsChange) origOnConnectionsChange.apply(this, arguments);
+            setTimeout(syncDownstreamOutputNodes, 20);
         };
 
         node.onResize = () => render();
